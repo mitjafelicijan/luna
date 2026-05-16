@@ -1,0 +1,16 @@
+CompileFlags:
+  Add: [
+    "-I.",
+    "-Iluajit/src",
+    "-Ilibev",
+    "-Icjson",
+    "-Icurl/include",
+    "-Iwolfssl",
+    "-Iwolfssl/build",
+    "-Isqlite",
+    "-Ijinjac/libjinjac/src",
+    "-Iiniparser",
+    "-DCURL_STATICLIB",
+    "-Wall",
+    "-Wextra"
+  ]
