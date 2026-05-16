@@ -5,13 +5,21 @@ LIBS    = luajit/src/libluajit.a libev/.libs/libev.a curl/build/lib/libcurl.a wo
 SRCS    = core.c json.c http.c timer.c util.c log.c assert.c request.c env.c crypto.c sqlite.c fs.c process.c template.c ini.c path.c stash.c sqlite/sqlite3.c cjson/cJSON.c
 OBJS    = $(SRCS:.c=.o)
 
+MEX_ASSURE = zig make cmake flex bison
+MEX_DESCRIPTION = "Lightweight Lua runtime powered by LuaJIT and libev"
+
+include makext.mk
+help: .help
+
+build: .assure luna # Statically compiles luna binary
+
 luna: $(OBJS)
 	$(CC) $(CFLAGS) -static -o $@ $^ $(LIBS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c -o $@ $<
 
-requirements:
+requirements: .assure # Compiles all required libraries
 	cd luajit/src && \
 		make clean && \
 		make -j`nproc` CC="zig cc -target x86_64-linux-musl" HOST_CC="gcc" BUILDMODE=static TARGET_LDFLAGS="-lunwind"
@@ -64,7 +72,7 @@ requirements:
 			-DBUILD_STATIC_LIBS=ON && \
 		make -j`nproc`
 
-clean:
+clean: # Cleans up build artefacts
 	rm -f luna *.o
 
 .PHONY: clean requirements
