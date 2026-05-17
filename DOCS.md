@@ -506,7 +506,7 @@ log.error("Failed to connect to database", "timeout")
 ## stash
 In-memory key-value store with TTL support, powered by SQLite.
 
-- `stash.use(id, [cleanup_interval])`: Switches to database `id` (0-15). `cleanup_interval` (default 60s) sets how often expired keys are purged.
+- `stash.cleanup(interval)`: Sets how often (in seconds) expired keys are purged (default 60s).
 - `stash.set(key, value, [ttl])`: Stores a value. `ttl` is in seconds. If `0` or omitted, the key never expires.
 - `stash.get(key)`: Retrieves a value. Returns `nil` if the key is missing or expired.
 - `stash.del(key)`: Deletes a key.
@@ -516,12 +516,11 @@ In-memory key-value store with TTL support, powered by SQLite.
 - `stash.keys([pattern])`: Returns an array of keys matching the SQL LIKE pattern (default `"%"`).
 - `stash.ttl(key)`: Returns remaining seconds until expiry. `-1` means no expiry, `-2` means key not found.
 - `stash.expire(key, ttl)`: Updates the TTL of an existing key. Returns `true` if successful.
-- `stash.clear()`: Removes all keys from the current database.
+- `stash.clear()`: Removes all keys.
 - `stash.count()`: Returns the number of non-expired keys.
 
 ### Example: Rate Limiting
 ```lua
-stash.use(0)
 local key = "limit:" .. "127.0.0.1" -- Example IP
 local count = stash.incr(key, 1)
 
@@ -536,8 +535,8 @@ end
 
 ### Example: Caching
 ```lua
--- Use DB 0, cleanup every 30 seconds
-stash.use(0, 30)
+-- Set cleanup every 30 seconds
+stash.cleanup(30)
 
 -- Store a table with 5 second TTL
 stash.set("user:session", { id = 42, active = true }, 5)

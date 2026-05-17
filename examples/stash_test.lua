@@ -1,7 +1,7 @@
 log.use_colors(true)
 
-log.info("--- Testing stash.use ---")
-stash.use(0, 1) -- Use DB 0, cleanup every 1s
+log.info("--- Testing stash.cleanup ---")
+stash.cleanup(1) -- cleanup every 1s
 
 log.info("--- Testing stash.set and stash.get ---")
 stash.set("name", "Luna", 0)
@@ -66,15 +66,6 @@ core.set_timeout(3000, function()
     stash.clear()
     assert.equal(0, stash.count())
     log.info("Count/Clear passed")
-
-    log.info("--- Testing Multi-DB ---")
-    stash.use(1, 60)
-    stash.set("db_key", "db1", 0)
-    stash.use(0, 60)
-    assert.equal(nil, stash.get("db_key"))
-    stash.use(1, 60)
-    assert.equal("db1", stash.get("db_key"))
-    log.info("Multi-DB passed")
 
     log.info("All stash module tests passed!")
     os.exit(0)

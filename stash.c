@@ -2,77 +2,77 @@
 #include <sqlite3.h>
 #include <time.h>
 
-#define MAX_MEM_DBS 16
-
 typedef struct {
 	sqlite3 *db;
 	ev_timer cleanup_watcher;
 	int interval;
-	int id;
 } MemDB;
 
-static MemDB mem_dbs[MAX_MEM_DBS];
-static int current_db_idx = 0;
+static MemDB mdb = {0};
 
 static void cleanup_cb(struct ev_loop *loop, ev_timer *w, int revents) {
-	MemDB *mdb = (MemDB *)w->data;
-	if (!mdb->db) {
+	if (!mdb.db) {
 		return;
 	}
 
 	sqlite3_stmt *stmt;
 	const char *sql = "DELETE FROM kv WHERE e > 0 AND e < ?;";
-	if (sqlite3_prepare_v2(mdb->db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+	if (sqlite3_prepare_v2(mdb.db, sql, -1, &stmt, NULL) == SQLITE_OK) {
 		sqlite3_bind_int64(stmt, 1, (sqlite3_int64)time(NULL));
 		sqlite3_step(stmt);
 		sqlite3_finalize(stmt);
 	}
 }
 
-static int l_stash_use(lua_State *L) {
-	int id = (int)luaL_checkinteger(L, 1);
-	int interval = (int)luaL_optinteger(L, 2, 60);
-
-	if (id < 0 || id >= MAX_MEM_DBS) {
-		return luaL_error(L, "invalid database id (0-%d)", MAX_MEM_DBS - 1);
+static int check_init(lua_State *L) {
+	if (mdb.db) {
+		return 0;
 	}
 
-	current_db_idx = id;
-	MemDB *mdb = &mem_dbs[id];
-
-	if (!mdb->db) {
-		if (sqlite3_open(":memory:", &mdb->db) != SQLITE_OK) {
-			return luaL_error(L, "failed to open in-memory database: %s", sqlite3_errmsg(mdb->db));
-		}
-
-		const char *schema = "CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT, e INTEGER);"
-			"CREATE INDEX IF NOT EXISTS idx_expiry ON kv(e);";
-		if (sqlite3_exec(mdb->db, schema, NULL, NULL, NULL) != SQLITE_OK) {
-			return luaL_error(L, "failed to create schema: %s", sqlite3_errmsg(mdb->db));
-		}
-
-		mdb->id = id;
-		mdb->cleanup_watcher.data = mdb;
-		ev_timer_init(&mdb->cleanup_watcher, cleanup_cb, interval, interval);
-		ev_timer_start(EV_DEFAULT, &mdb->cleanup_watcher);
-	} else if (interval != mdb->interval) {
-		ev_timer_stop(EV_DEFAULT, &mdb->cleanup_watcher);
-		ev_timer_set(&mdb->cleanup_watcher, interval, interval);
-		ev_timer_start(EV_DEFAULT, &mdb->cleanup_watcher);
+	if (sqlite3_open(":memory:", &mdb.db) != SQLITE_OK) {
+		return luaL_error(L, "failed to open in-memory database: %s", sqlite3_errmsg(mdb.db));
 	}
 
-	mdb->interval = interval;
+	const char *schema = "CREATE TABLE IF NOT EXISTS kv (k TEXT PRIMARY KEY, v TEXT, e INTEGER);"
+		"CREATE INDEX IF NOT EXISTS idx_expiry ON kv(e);";
+	if (sqlite3_exec(mdb.db, schema, NULL, NULL, NULL) != SQLITE_OK) {
+		return luaL_error(L, "failed to create schema: %s", sqlite3_errmsg(mdb.db));
+	}
+
+	if (mdb.interval <= 0) {
+		mdb.interval = 60;
+	}
+
+	mdb.cleanup_watcher.data = &mdb;
+	ev_timer_init(&mdb.cleanup_watcher, cleanup_cb, mdb.interval, mdb.interval);
+	ev_timer_start(EV_DEFAULT, &mdb.cleanup_watcher);
+
+	return 0;
+}
+
+static int l_stash_cleanup(lua_State *L) {
+	int interval = (int)luaL_checkinteger(L, 1);
+	if (interval <= 0) {
+		return luaL_error(L, "interval must be greater than 0");
+	}
+
+	mdb.interval = interval;
+
+	if (mdb.db) {
+		ev_timer_stop(EV_DEFAULT, &mdb.cleanup_watcher);
+		ev_timer_set(&mdb.cleanup_watcher, interval, interval);
+		ev_timer_start(EV_DEFAULT, &mdb.cleanup_watcher);
+	} else {
+		check_init(L);
+	}
+
 	return 0;
 }
 
 static int l_stash_set(lua_State *L) {
+	check_init(L);
 	const char *key = luaL_checkstring(L, 1);
 	int ttl = (int)luaL_optinteger(L, 3, 0);
-
-	MemDB *mdb = &mem_dbs[current_db_idx];
-	if (!mdb->db) {
-		return luaL_error(L, "database not initialized, call stash.use(id) first");
-	}
 
 	cJSON *json = lua_to_cjson(L, 2);
 	char *value_str = cJSON_PrintUnformatted(json);
@@ -80,9 +80,9 @@ static int l_stash_set(lua_State *L) {
 
 	sqlite3_stmt *stmt;
 	const char *sql = "INSERT OR REPLACE INTO kv (k, v, e) VALUES (?, ?, ?);";
-	if (sqlite3_prepare_v2(mdb->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+	if (sqlite3_prepare_v2(mdb.db, sql, -1, &stmt, NULL) != SQLITE_OK) {
 		free(value_str);
-		return luaL_error(L, "failed to prepare statement: %s", sqlite3_errmsg(mdb->db));
+		return luaL_error(L, "failed to prepare statement: %s", sqlite3_errmsg(mdb.db));
 	}
 
 	sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
@@ -97,7 +97,7 @@ static int l_stash_set(lua_State *L) {
 	if (sqlite3_step(stmt) != SQLITE_DONE) {
 		sqlite3_finalize(stmt);
 		free(value_str);
-		return luaL_error(L, "failed to execute statement: %s", sqlite3_errmsg(mdb->db));
+		return luaL_error(L, "failed to execute statement: %s", sqlite3_errmsg(mdb.db));
 	}
 
 	sqlite3_finalize(stmt);
@@ -106,17 +106,13 @@ static int l_stash_set(lua_State *L) {
 }
 
 static int l_stash_get(lua_State *L) {
+	check_init(L);
 	const char *key = luaL_checkstring(L, 1);
-
-	MemDB *mdb = &mem_dbs[current_db_idx];
-	if (!mdb->db) {
-		return luaL_error(L, "database not initialized, call stash.use(id) first");
-	}
 
 	sqlite3_stmt *stmt;
 	const char *sql = "SELECT v FROM kv WHERE k = ? AND (e > ? OR e = 0);";
-	if (sqlite3_prepare_v2(mdb->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
-		return luaL_error(L, "failed to prepare statement: %s", sqlite3_errmsg(mdb->db));
+	if (sqlite3_prepare_v2(mdb.db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+		return luaL_error(L, "failed to prepare statement: %s", sqlite3_errmsg(mdb.db));
 	}
 
 	sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
@@ -140,24 +136,20 @@ static int l_stash_get(lua_State *L) {
 }
 
 static int l_stash_del(lua_State *L) {
+	check_init(L);
 	const char *key = luaL_checkstring(L, 1);
-
-	MemDB *mdb = &mem_dbs[current_db_idx];
-	if (!mdb->db) {
-		return luaL_error(L, "database not initialized, call stash.use(id) first");
-	}
 
 	sqlite3_stmt *stmt;
 	const char *sql = "DELETE FROM kv WHERE k = ?;";
-	if (sqlite3_prepare_v2(mdb->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
-		return luaL_error(L, "failed to prepare statement: %s", sqlite3_errmsg(mdb->db));
+	if (sqlite3_prepare_v2(mdb.db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+		return luaL_error(L, "failed to prepare statement: %s", sqlite3_errmsg(mdb.db));
 	}
 
 	sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
 
 	if (sqlite3_step(stmt) != SQLITE_DONE) {
 		sqlite3_finalize(stmt);
-		return luaL_error(L, "failed to execute statement: %s", sqlite3_errmsg(mdb->db));
+		return luaL_error(L, "failed to execute statement: %s", sqlite3_errmsg(mdb.db));
 	}
 
 	sqlite3_finalize(stmt);
@@ -165,16 +157,13 @@ static int l_stash_del(lua_State *L) {
 }
 
 static int l_stash_exists(lua_State *L) {
+	check_init(L);
 	const char *key = luaL_checkstring(L, 1);
-	MemDB *mdb = &mem_dbs[current_db_idx];
-	if (!mdb->db) {
-		return luaL_error(L, "database not initialized");
-	}
 
 	sqlite3_stmt *stmt;
 	const char *sql = "SELECT 1 FROM kv WHERE k = ? AND (e > ? OR e = 0);";
-	if (sqlite3_prepare_v2(mdb->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
-		return luaL_error(L, "failed to prepare statement: %s", sqlite3_errmsg(mdb->db));
+	if (sqlite3_prepare_v2(mdb.db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+		return luaL_error(L, "failed to prepare statement: %s", sqlite3_errmsg(mdb.db));
 	}
 	sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(stmt, 2, (sqlite3_int64)time(NULL));
@@ -186,17 +175,14 @@ static int l_stash_exists(lua_State *L) {
 }
 
 static int l_stash_incr(lua_State *L) {
+	check_init(L);
 	const char *key = luaL_checkstring(L, 1);
 	double amount = luaL_optnumber(L, 2, 1);
-	MemDB *mdb = &mem_dbs[current_db_idx];
-	if (!mdb->db) {
-		return luaL_error(L, "database not initialized");
-	}
 
 	sqlite3_stmt *stmt;
 	const char *get_sql = "SELECT v, e FROM kv WHERE k = ?;";
-	if (sqlite3_prepare_v2(mdb->db, get_sql, -1, &stmt, NULL) != SQLITE_OK) {
-		return luaL_error(L, "failed to prepare statement: %s", sqlite3_errmsg(mdb->db));
+	if (sqlite3_prepare_v2(mdb.db, get_sql, -1, &stmt, NULL) != SQLITE_OK) {
+		return luaL_error(L, "failed to prepare statement: %s", sqlite3_errmsg(mdb.db));
 	}
 	sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
 
@@ -216,8 +202,8 @@ static int l_stash_incr(lua_State *L) {
 	snprintf(val_buf, sizeof(val_buf), "%g", new_val);
 
 	const char *set_sql = "INSERT OR REPLACE INTO kv (k, v, e) VALUES (?, ?, ?);";
-	if (sqlite3_prepare_v2(mdb->db, set_sql, -1, &stmt, NULL) != SQLITE_OK) {
-		return luaL_error(L, "failed to prepare statement: %s", sqlite3_errmsg(mdb->db));
+	if (sqlite3_prepare_v2(mdb.db, set_sql, -1, &stmt, NULL) != SQLITE_OK) {
+		return luaL_error(L, "failed to prepare statement: %s", sqlite3_errmsg(mdb.db));
 	}
 	sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 2, val_buf, -1, SQLITE_TRANSIENT);
@@ -237,16 +223,13 @@ static int l_stash_decr(lua_State *L) {
 }
 
 static int l_stash_keys(lua_State *L) {
+	check_init(L);
 	const char *pattern = luaL_optstring(L, 1, "%");
-	MemDB *mdb = &mem_dbs[current_db_idx];
-	if (!mdb->db) {
-		return luaL_error(L, "database not initialized");
-	}
 
 	sqlite3_stmt *stmt;
 	const char *sql = "SELECT k FROM kv WHERE k LIKE ? AND (e > ? OR e = 0);";
-	if (sqlite3_prepare_v2(mdb->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
-		return luaL_error(L, "failed to prepare statement: %s", sqlite3_errmsg(mdb->db));
+	if (sqlite3_prepare_v2(mdb.db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+		return luaL_error(L, "failed to prepare statement: %s", sqlite3_errmsg(mdb.db));
 	}
 	sqlite3_bind_text(stmt, 1, pattern, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(stmt, 2, (sqlite3_int64)time(NULL));
@@ -262,16 +245,13 @@ static int l_stash_keys(lua_State *L) {
 }
 
 static int l_stash_ttl(lua_State *L) {
+	check_init(L);
 	const char *key = luaL_checkstring(L, 1);
-	MemDB *mdb = &mem_dbs[current_db_idx];
-	if (!mdb->db) {
-		return luaL_error(L, "database not initialized");
-	}
 
 	sqlite3_stmt *stmt;
 	const char *sql = "SELECT e FROM kv WHERE k = ? AND (e > ? OR e = 0);";
-	if (sqlite3_prepare_v2(mdb->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
-		return luaL_error(L, "failed to prepare statement: %s", sqlite3_errmsg(mdb->db));
+	if (sqlite3_prepare_v2(mdb.db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+		return luaL_error(L, "failed to prepare statement: %s", sqlite3_errmsg(mdb.db));
 	}
 	sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(stmt, 2, (sqlite3_int64)time(NULL));
@@ -291,17 +271,14 @@ static int l_stash_ttl(lua_State *L) {
 }
 
 static int l_stash_expire(lua_State *L) {
+	check_init(L);
 	const char *key = luaL_checkstring(L, 1);
 	int ttl = (int)luaL_checkinteger(L, 2);
-	MemDB *mdb = &mem_dbs[current_db_idx];
-	if (!mdb->db) {
-		return luaL_error(L, "database not initialized");
-	}
 
 	sqlite3_stmt *stmt;
 	const char *sql = "UPDATE kv SET e = ? WHERE k = ? AND (e > ? OR e = 0);";
-	if (sqlite3_prepare_v2(mdb->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
-		return luaL_error(L, "failed to prepare statement: %s", sqlite3_errmsg(mdb->db));
+	if (sqlite3_prepare_v2(mdb.db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+		return luaL_error(L, "failed to prepare statement: %s", sqlite3_errmsg(mdb.db));
 	}
 
 	sqlite3_int64 expiry = (ttl > 0) ? (time(NULL) + ttl) : 0;
@@ -310,7 +287,7 @@ static int l_stash_expire(lua_State *L) {
 	sqlite3_bind_int64(stmt, 3, (sqlite3_int64)time(NULL));
 
 	sqlite3_step(stmt);
-	int changes = sqlite3_changes(mdb->db);
+	int changes = sqlite3_changes(mdb.db);
 	sqlite3_finalize(stmt);
 
 	lua_pushboolean(L, changes > 0);
@@ -318,25 +295,17 @@ static int l_stash_expire(lua_State *L) {
 }
 
 static int l_stash_clear(lua_State *L) {
-	MemDB *mdb = &mem_dbs[current_db_idx];
-	if (!mdb->db) {
-		return luaL_error(L, "database not initialized");
-	}
-
-	sqlite3_exec(mdb->db, "DELETE FROM kv;", NULL, NULL, NULL);
+	check_init(L);
+	sqlite3_exec(mdb.db, "DELETE FROM kv;", NULL, NULL, NULL);
 	return 0;
 }
 
 static int l_stash_count(lua_State *L) {
-	MemDB *mdb = &mem_dbs[current_db_idx];
-	if (!mdb->db) {
-		return luaL_error(L, "database not initialized");
-	}
-
+	check_init(L);
 	sqlite3_stmt *stmt;
 	const char *sql = "SELECT COUNT(*) FROM kv WHERE (e > ? OR e = 0);";
-	if (sqlite3_prepare_v2(mdb->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
-		return luaL_error(L, "failed to prepare statement: %s", sqlite3_errmsg(mdb->db));
+	if (sqlite3_prepare_v2(mdb.db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+		return luaL_error(L, "failed to prepare statement: %s", sqlite3_errmsg(mdb.db));
 	}
 	sqlite3_bind_int64(stmt, 1, (sqlite3_int64)time(NULL));
 
@@ -350,7 +319,7 @@ static int l_stash_count(lua_State *L) {
 }
 
 static const struct luaL_Reg stash_lib[] = {
-	{"use", l_stash_use},
+	{"cleanup", l_stash_cleanup},
 	{"set", l_stash_set},
 	{"get", l_stash_get},
 	{"del", l_stash_del},
