@@ -2,7 +2,7 @@ CC      = zig cc -target x86_64-linux-musl
 CFLAGS  = -Wall -O2 -Iluajit/src -Ilibev -Icjson -Icurl/include -Iwolfssl -Iwolfssl/build -Isqlite -Ijinjac/libjinjac/include -Ijinjac/libjinjac/src -Iiniparser/src -DCURL_STATICLIB
 LIBS    = luajit/src/libluajit.a libev/.libs/libev.a curl/build/lib/libcurl.a wolfssl/build/libwolfssl.a jinjac/build/libjinjac/src/liblibjinjac_static.a iniparser/build/libiniparser.a -lm -ldl -lpthread -lunwind
 
-SRCS    = core.c json.c http.c timer.c util.c log.c assert.c request.c env.c crypto.c sqlite.c fs.c process.c template.c ini.c path.c stash.c sqlite/sqlite3.c cjson/cJSON.c
+SRCS    = main.c core.c json.c http.c util.c log.c assert.c request.c env.c crypto.c sqlite.c fs.c process.c template.c ini.c path.c stash.c sqlite/sqlite3.c cjson/cJSON.c
 OBJS    = $(SRCS:.c=.o)
 
 MEX_ASSURE = zig make cmake flex bison
