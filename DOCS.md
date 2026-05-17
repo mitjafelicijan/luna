@@ -166,7 +166,18 @@ An event-driven web server with routing and middleware support.
 - `http.run()`: Starts the event loop.
 
 ### Request Object (`req`)
-...
+- `req.method`: The HTTP method (e.g., `"GET"`, `"POST"`).
+- `req.path`: The requested path.
+- `req.query`: A table containing URL query parameters.
+- `req.params`: A table containing route parameters (e.g., `:id`).
+- `req.body`: The raw request body as a string.
+- `req:json()`: Parses the request body as JSON and returns a Lua table (or `nil` if invalid).
+
+### Response Object (`res`)
+- `res:status(code)`: Sets the HTTP status code (e.g., `200`, `404`). Returns `res` for chaining.
+- `res:header(name, value)`: Sets a response header. Returns `res` for chaining.
+- `res:send(body)`: Sends the response body with `text/html` content type.
+- `res:json(table)`: Serializes the table to JSON and sends it with `application/json` content type.
 ### WebSocket Object (`ws`)
 - `ws:send(message)`: Sends a text message to the client.
 - `ws:on(event, callback)`: Registers an event listener. Supported events: `"message"`, `"close"`.
