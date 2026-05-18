@@ -3,6 +3,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <netinet/in.h>
+#include <limits.h>
 
 #include <wolfssl/options.h>
 #include <wolfssl/wolfcrypt/hash.h>
@@ -721,29 +722,48 @@ static void read_cb(struct ev_loop *loop, ev_io *w, int revents) {
 				if (!client->response_sent) {
 					int found = 0;
 					if (static_dir && strcasecmp(method, "GET") == 0) {
-						char full_path_buf[1024];
-						if (!strstr(path, "..")) {
-							snprintf(full_path_buf, sizeof(full_path_buf), "%s%s", static_dir, path);
-							struct stat st;
-							if (stat(full_path_buf, &st) == 0 && S_ISDIR(st.st_mode)) {
-								strncat(full_path_buf, "/index.html", sizeof(full_path_buf) - strlen(full_path_buf) - 1);
-							}
-							FILE *fp = fopen(full_path_buf, "rb");
-							if (fp) {
-								fseek(fp, 0, SEEK_END);
-								size_t fsize = ftell(fp);
-								fseek(fp, 0, SEEK_SET);
-								char *fcontent = malloc(fsize + 1);
-								if (fcontent) {
-									if (fread(fcontent, 1, fsize, fp) == fsize) {
-										const char *mime = get_mime_type(full_path_buf);
-										client->status_code = 200;
-										send_response(client, fcontent, fsize, mime);
-										found = 1;
+						char requested_path[PATH_MAX];
+						char resolved_path[PATH_MAX];
+						snprintf(requested_path, sizeof(requested_path), "%s/%s", static_dir, path);
+
+						if (realpath(requested_path, resolved_path)) {
+							size_t static_dir_len = strlen(static_dir);
+							if (strncmp(resolved_path, static_dir, static_dir_len) == 0 &&
+								(resolved_path[static_dir_len] == '\0' || resolved_path[static_dir_len] == '/')) {
+
+								struct stat st;
+								if (stat(resolved_path, &st) == 0 && S_ISDIR(st.st_mode)) {
+									char index_path[PATH_MAX];
+									snprintf(index_path, sizeof(index_path), "%s/index.html", resolved_path);
+									if (realpath(index_path, resolved_path)) {
+										if (!(strncmp(resolved_path, static_dir, static_dir_len) == 0 &&
+											(resolved_path[static_dir_len] == '\0' || resolved_path[static_dir_len] == '/'))) {
+											resolved_path[0] = '\0';
+										}
+									} else {
+										resolved_path[0] = '\0';
 									}
-									free(fcontent);
 								}
-								fclose(fp);
+
+								if (resolved_path[0] != '\0') {
+									FILE *fp = fopen(resolved_path, "rb");
+									if (fp) {
+										fseek(fp, 0, SEEK_END);
+										size_t fsize = ftell(fp);
+										fseek(fp, 0, SEEK_SET);
+										char *fcontent = malloc(fsize + 1);
+										if (fcontent) {
+											if (fread(fcontent, 1, fsize, fp) == fsize) {
+												const char *mime = get_mime_type(resolved_path);
+												client->status_code = 200;
+												send_response(client, fcontent, fsize, mime);
+												found = 1;
+											}
+											free(fcontent);
+										}
+										fclose(fp);
+									}
+								}
 							}
 						}
 					}
@@ -834,7 +854,12 @@ static int l_http_static(lua_State *L) {
 	if (static_dir) {
 		free(static_dir);
 	}
-	static_dir = strdup(path);
+	char resolved[PATH_MAX];
+	if (realpath(path, resolved)) {
+		static_dir = strdup(resolved);
+	} else {
+		static_dir = strdup(path);
+	}
 	return 0;
 }
 
