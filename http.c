@@ -851,15 +851,19 @@ static int l_http_use(lua_State *L) {
 
 static int l_http_static(lua_State *L) {
 	const char *path = luaL_checkstring(L, 1);
+	char resolved[PATH_MAX];
+	if (!realpath(path, resolved)) {
+		return luaL_error(L, "Could not resolve static directory: %s", path);
+	}
 	if (static_dir) {
 		free(static_dir);
 	}
-	char resolved[PATH_MAX];
-	if (realpath(path, resolved)) {
-		static_dir = strdup(resolved);
-	} else {
-		static_dir = strdup(path);
+	// Remove trailing slash if present
+	size_t len = strlen(resolved);
+	if (len > 1 && resolved[len - 1] == '/') {
+		resolved[len - 1] = '\0';
 	}
+	static_dir = strdup(resolved);
 	return 0;
 }
 
